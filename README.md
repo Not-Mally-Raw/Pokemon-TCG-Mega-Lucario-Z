@@ -20,7 +20,7 @@
 ---
 
 <p align="center">
-  <img src="https://media.tenor.com/JRJpS_KVJaUAAAAd/pokemon-pokemon-the-origin.gif" alt="Pokémon Battle Animation" width="480"/>
+  <img src="https://media1.tenor.com/m/MXCt5CFZhmgAAAAd/pokemon-pokemon-the-origin.gif" alt="Pokémon Battle Animation" width="480"/>
 </p>
 
 ---
