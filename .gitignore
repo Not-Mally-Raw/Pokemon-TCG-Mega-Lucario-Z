@@ -1,0 +1,20 @@
+# Data files & large datasets
+*.jsonl
+*.csv
+*.tar.gz
+data/
+*.zip
+*.tar
+
+# Virtual environments
+venv/
+venv313/
+.venv/
+__pycache__/
+*.pyc
+
+# Cache & IDE
+.DS_Store
+.pytest_cache/
+.agents/
+.diff_work/
