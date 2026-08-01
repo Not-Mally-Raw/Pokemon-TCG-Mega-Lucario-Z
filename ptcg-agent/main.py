@@ -63,6 +63,18 @@ def get_card_db() -> Dict[int, Any]:
     return CARD_DB
 
 
+def _card_stage(card) -> str:
+    """Safely extract stage/card_type string from a Card or CardData object.
+    Kaggle's CardData may use 'stage', 'card_type', 'cardType', or 'types'."""
+    if not card:
+        return ""
+    for attr in ("stage", "card_type", "cardType"):
+        val = getattr(card, attr, None)
+        if val:
+            return str(val)
+    return ""
+
+
 def is_riolu_card(card: Optional[Card]) -> bool:
     if not card or not card.name:
         return False
@@ -81,7 +93,7 @@ def is_mega_lucario_ex_card(card: Optional[Card]) -> bool:
     if not card or not card.name:
         return False
     name_clean = card.name.strip().lower()
-    stage_clean = (card.stage or "").strip().lower()
+    stage_clean = _card_stage(card).strip().lower()
     return "mega lucario" in name_clean or ("lucario" in name_clean and "mega" in stage_clean)
 
 
@@ -97,7 +109,7 @@ def get_prize_value(card: Optional[Card]) -> int:
     if not card:
         return 1
     name_lower = (card.name or "").lower()
-    stage_lower = (card.stage or "").lower()
+    stage_lower = _card_stage(card).lower()
     if "mega" in name_lower or "mega" in stage_lower:
         return 3
     if " ex" in name_lower or name_lower.endswith("ex") or "ex" in stage_lower or "vmax" in name_lower or "vstar" in name_lower:
@@ -305,7 +317,7 @@ def score_option(opt: Option, obs: Observation, plan: AttackPlan) -> int:
                 return 1000
             c = db.get(cid)
             if c:
-                stage = (c.stage or "").lower()
+                stage = _card_stage(c).lower()
                 if "supporter" in stage:
                     return 2000
                 if "energy" in stage:
@@ -323,7 +335,7 @@ def score_option(opt: Option, obs: Observation, plan: AttackPlan) -> int:
                 return 8500
             c = db.get(cid)
             if c:
-                stage = (c.stage or "").lower()
+                stage = _card_stage(c).lower()
                 if "supporter" in stage:
                     return 8000
                 if "item" in stage:
@@ -351,9 +363,9 @@ def score_option(opt: Option, obs: Observation, plan: AttackPlan) -> int:
                     return 8000
                 if is_riolu_id(cid):
                     return 7000
-                if "Supporter" in (c.stage or ""):
+                if "Supporter" in _card_stage(c):
                     return 6000
-                if "Energy" in (c.stage or ""):
+                if "Energy" in _card_stage(c):
                     return 5000
         return 3000 - _opt_index(opt)
 
@@ -383,7 +395,7 @@ def score_option(opt: Option, obs: Observation, plan: AttackPlan) -> int:
         if cid:
             c = db.get(cid)
             if c:
-                stage = (c.stage or "").lower()
+                stage = _card_stage(c).lower()
                 if "supporter" in stage:
                     return 6500
                 if "item" in stage or "tool" in stage:
