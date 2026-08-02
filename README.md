@@ -129,18 +129,43 @@ Pokemon TCG/
 
 ---
 
-## Quickstart
+## Quickstart & Local Evaluation
 
 ```bash
-# Package for Kaggle submission
 cd ptcg-agent
+
+# 1. Run local tournament & Kaggle Elo simulator (200 simulated matches against 4 bot archetypes)
+python3 evaluate_agent.py
+
+# 2. Package for Kaggle submission (<197.7 MiB)
 tar czf submission.tar.gz main.py deck.csv cg/
 
-# Sanity check locally
-python3 -c "import ast; ast.parse(open('main.py').read()); print('Clean.')"
+# 3. Sanity check syntax locally
+python3 -c "import ast; ast.parse(open('main.py').read()); print('Syntax Clean.')"
 ```
 
-The notebook handles everything else. Open `PTCG_Baseline_Submission v3.ipynb` on Kaggle, hit **Run All**, then submit `submission.tar.gz`.
+The notebook handles everything else. Open `PTCG_Baseline_Submission v4.ipynb` on Kaggle, hit **Run All**, then submit `submission.tar.gz`.
+
+---
+
+## Local Tournament & Elo Harness (`evaluate_agent.py`)
+
+Test your agent's win rate and score locally before submitting to Kaggle:
+
+- **Benchmark Opponents**: `RandomBot`, `GreedyKOBot`, `EnergyAggroBot`, `HeuristicMirrorBot`.
+- **Telemetry**: Measures Win Rate %, Average Decision Entropy (nats), Prize Margin, and Estimated Kaggle Elo rating (1000 base scale).
+- **Global #1 Tier Target**: 1295.5+ Elo (Tokyo Faceoff Ready).
+
+---
+
+## Changelog & Version History
+
+### Version 3.3.0 (2026-08-02) — Kaggle Ground-Truth API Reconciliation & Local Evaluator
+- **`_wrap_obs()` Adapter Shim**: Reconciled Kaggle's nested `obs.current.players[yourIndex]` structure with engine expectations.
+- **`_card_stage()` Classifier**: Synthesized card stages from Kaggle's boolean flags (`megaEx`, `ex`, `basic`, `stage1`, `stage2`) and integer `cardType` codes.
+- **Integer Attack ID Handling**: Updated `compute_effective_damage()` to handle integer attack IDs passed by Kaggle API.
+- **`SimpleNamespace` Unit Tests**: Converted Cell 8 verification tests to robust `SimpleNamespace` mocks.
+- **`evaluate_agent.py`**: Built 200-game local tournament simulator & Kaggle Elo rating estimator.
 
 ---
 
