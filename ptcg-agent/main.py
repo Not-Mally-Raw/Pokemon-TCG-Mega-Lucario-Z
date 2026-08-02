@@ -14,6 +14,7 @@ import random
 import re
 import numpy as np
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cg.api as cg
@@ -64,15 +65,80 @@ def get_card_db() -> Dict[int, Any]:
 
 
 def _card_stage(card) -> str:
-    """Safely extract stage/card_type string from a Card or CardData object.
-    Kaggle's CardData may use 'stage', 'card_type', 'cardType', or 'types'."""
+    """Synthesize stage/type string from Kaggle CardData boolean flags + cardType int."""
     if not card:
         return ""
-    for attr in ("stage", "card_type", "cardType"):
-        val = getattr(card, attr, None)
-        if val:
-            return str(val)
-    return ""
+    parts = []
+    if getattr(card, 'megaEx', False):
+        parts.append("Mega")
+    if getattr(card, 'ex', False):
+        parts.append("Ex")
+    if getattr(card, 'stage2', False):
+        parts.append("Stage2")
+    elif getattr(card, 'stage1', False):
+        parts.append("Stage1")
+    elif getattr(card, 'basic', False):
+        parts.append("Basic")
+    ct = getattr(card, 'cardType', None)
+    if isinstance(ct, int) and not parts:
+        ct_map = {1: "Supporter", 2: "Item", 3: "Tool", 4: "Stadium", 5: "Energy"}
+        ct_str = ct_map.get(ct)
+        if ct_str:
+            parts.append(ct_str)
+    if not parts:
+        for attr in ("stage", "card_type"):
+            val = getattr(card, attr, None)
+            if val and isinstance(val, str):
+                return val
+    return " ".join(parts)
+
+
+def _wrap_obs(obs):
+    """Adapt Kaggle Observation (obs.current.players[]) to the flat format our engine expects."""
+    if hasattr(obs, 'my_active'):
+        return obs
+    state = getattr(obs, 'current', None)
+    if not state or not hasattr(state, 'players') or len(state.players) < 2:
+        return obs
+    yi = getattr(state, 'yourIndex', 0)
+    my_ps = state.players[yi]
+    opp_ps = state.players[1 - yi]
+
+    def _wrap_pkmn(p):
+        return SimpleNamespace(
+            id=getattr(p, 'id', 0), serial=getattr(p, 'serial', 0),
+            hp=getattr(p, 'hp', 0),
+            max_hp=getattr(p, 'maxHp', getattr(p, 'max_hp', 0)),
+            energies=getattr(p, 'energies', []),
+            energy_cards=getattr(p, 'energyCards', getattr(p, 'energy_cards', [])),
+        )
+
+    my_active = [_wrap_pkmn(p) for p in getattr(my_ps, 'active', [])]
+    opp_active = [_wrap_pkmn(p) for p in getattr(opp_ps, 'active', [])]
+    my_bench = [_wrap_pkmn(p) for p in getattr(my_ps, 'bench', [])]
+    opp_bench = [_wrap_pkmn(p) for p in getattr(opp_ps, 'bench', [])]
+
+    return SimpleNamespace(
+        select=obs.select,
+        current=state,
+        my_state=SimpleNamespace(
+            bench_max=getattr(my_ps, 'benchMax', getattr(my_ps, 'bench_max', 5)),
+            deck_count=getattr(my_ps, 'deckCount', getattr(my_ps, 'deck_count', 0)),
+            hand_count=getattr(my_ps, 'handCount', getattr(my_ps, 'hand_count', 0)),
+            prize_count=len(getattr(my_ps, 'prize', [])),
+            active=my_active, bench=my_bench,
+            hand=getattr(my_ps, 'hand', []),
+        ),
+        opp_state=SimpleNamespace(
+            prize_count=len(getattr(opp_ps, 'prize', [])),
+            active=opp_active, bench=opp_bench,
+        ),
+        my_active=my_active, opp_active=opp_active,
+        my_bench=my_bench, opp_bench=opp_bench,
+        my_hand=getattr(my_ps, 'hand', []),
+        my_prize_count=len(getattr(my_ps, 'prize', [])),
+        opp_prize_count=len(getattr(opp_ps, 'prize', [])),
+    )
 
 
 def is_riolu_card(card: Optional[Card]) -> bool:
@@ -90,9 +156,12 @@ def is_riolu_id(cid: Optional[int]) -> bool:
 
 
 def is_mega_lucario_ex_card(card: Optional[Card]) -> bool:
-    if not card or not card.name:
+    if not card:
         return False
-    name_clean = card.name.strip().lower()
+    name = getattr(card, 'name', '') or ''
+    if getattr(card, 'megaEx', False) and 'lucario' in name.lower():
+        return True
+    name_clean = name.strip().lower()
     stage_clean = _card_stage(card).strip().lower()
     return "mega lucario" in name_clean or ("lucario" in name_clean and "mega" in stage_clean)
 
@@ -108,11 +177,12 @@ def is_mega_lucario_ex_id(cid: Optional[int]) -> bool:
 def get_prize_value(card: Optional[Card]) -> int:
     if not card:
         return 1
-    name_lower = (card.name or "").lower()
-    stage_lower = _card_stage(card).lower()
-    if "mega" in name_lower or "mega" in stage_lower:
+    if getattr(card, 'megaEx', False):
         return 3
-    if " ex" in name_lower or name_lower.endswith("ex") or "ex" in stage_lower or "vmax" in name_lower or "vstar" in name_lower:
+    name_lower = (getattr(card, 'name', '') or '').lower()
+    if getattr(card, 'ex', False) or ' ex' in name_lower or name_lower.endswith('ex'):
+        return 2
+    if 'vmax' in name_lower or 'vstar' in name_lower:
         return 2
     return 1
 
@@ -202,32 +272,52 @@ class AttackPlan:
     target_prize_value: int = 1
 
 
-def compute_effective_damage(attack: Attack, attacker_card: Optional[Card], defender_card: Optional[Card]) -> int:
+def compute_effective_damage(attack, attacker_card, defender_card) -> int:
+    """Compute effective damage. Handles both Attack objects and int attack IDs."""
     if not attack:
         return 0
-    base_dmg = attack.damage
-    if base_dmg <= 0 or not defender_card:
-        return base_dmg
 
-    atk_type = (attacker_card.element_type if attacker_card else "").upper()
-    weakness = (defender_card.weakness or "").upper()
-    resistance = (defender_card.resistance or "").upper()
-
-    mult = 1
-    if atk_type and atk_type in weakness:
-        mult = 2
-
-    damage = base_dmg * mult
-
-    if atk_type and atk_type in resistance:
-        matches = re.findall(r"-\d+", resistance)
-        if matches:
-            penalty = abs(int(matches[0]))
-            damage = max(0, damage - penalty)
+    # Kaggle: attacks are integer IDs, not objects with .damage
+    if isinstance(attack, int):
+        # Estimate damage based on the attacker card's stage
+        if attacker_card:
+            if getattr(attacker_card, 'megaEx', False):
+                base_dmg = 120
+            elif getattr(attacker_card, 'ex', False):
+                base_dmg = 80
+            elif getattr(attacker_card, 'stage1', False):
+                base_dmg = 60
+            elif getattr(attacker_card, 'stage2', False):
+                base_dmg = 100
+            else:
+                base_dmg = 30
         else:
-            damage = max(0, damage - 20)
+            base_dmg = 30
+    else:
+        base_dmg = getattr(attack, 'damage', 0)
 
-    return damage
+    if base_dmg <= 0 or not defender_card:
+        return max(0, base_dmg)
+
+    # Weakness: double damage if type matches
+    weakness = getattr(defender_card, 'weakness', None)
+    if weakness:
+        w_str = str(weakness).upper()
+        atk_type = str(getattr(attacker_card, 'energyType', getattr(attacker_card, 'element_type', ''))).upper()
+        if atk_type and atk_type in w_str:
+            base_dmg *= 2
+
+    # Resistance: reduce damage
+    resistance = getattr(defender_card, 'resistance', None)
+    if resistance:
+        r_str = str(resistance)
+        matches = re.findall(r"-\d+", r_str)
+        if matches:
+            base_dmg = max(0, base_dmg - abs(int(matches[0])))
+        else:
+            base_dmg = max(0, base_dmg - 20)
+
+    return base_dmg
 
 
 def compute_attack_plan(obs: Observation) -> AttackPlan:
@@ -599,6 +689,7 @@ class HeuristicEngine:
         return self.deck
 
     def choose(self, obs: Observation) -> List[int]:
+        obs = _wrap_obs(obs)
         if not obs.select or not obs.select.options:
             return []
 
@@ -673,6 +764,7 @@ def agent(observation: Any, configuration: Any = None) -> List[int]:
     """Kaggle environment entry point."""
     try:
         obs = to_observation_class(observation)
+        obs = _wrap_obs(obs)
         if obs.select is None:
             return _get_engine().get_deck()
 
