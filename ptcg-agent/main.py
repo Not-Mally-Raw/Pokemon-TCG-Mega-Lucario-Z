@@ -362,43 +362,74 @@ class AttackPlan:
     target_prize_value: int = 1
 
 
+def hypergeometric_out_probability(N: int, K: int, n: int) -> float:
+    """
+    Calculate probability of drawing at least 1 target out card:
+    P(X >= 1) = 1 - (C(N-K, n) / C(N, n))
+    N = remaining deck size, K = outs remaining in deck, n = cards drawn.
+    """
+    if N <= 0 or K <= 0 or n <= 0 or K > N or n > N:
+        return 0.0
+    try:
+        prob_zero = math.comb(N - K, n) / math.comb(N, n)
+        return float(max(0.0, min(1.0, 1.0 - prob_zero)))
+    except Exception:
+        return 0.0
+
+
 def compute_effective_damage(attack, attacker_card, defender_card) -> int:
-    """Compute effective damage. Handles both Attack objects and int attack IDs."""
-    if not attack:
+    """Compute effective damage formula: D_eff = D_base * W - R.
+    Looks up move damage directly from attacker_card.attacks if attack is an int ID or index.
+    """
+    if attack is None:
         return 0
 
-    # Kaggle: attacks are integer IDs, not objects with .damage
+    base_dmg = 0
+
     if isinstance(attack, int):
-        # Estimate damage based on the attacker card's stage
-        if attacker_card:
-            if getattr(attacker_card, 'megaEx', False):
+        # 1. Look up attack damage from attacker_card.attacks if available
+        if attacker_card and hasattr(attacker_card, "attacks"):
+            atks = getattr(attacker_card, "attacks", [])
+            if isinstance(atks, (list, tuple)) and len(atks) > 0:
+                # Check as 0-based index into attacker_card.attacks
+                if 0 <= attack < len(atks):
+                    atk_obj = atks[attack]
+                    base_dmg = getattr(atk_obj, "damage", 0) if not isinstance(atk_obj, int) else 0
+                # Search by attack ID attribute if not matched by index
+                if base_dmg <= 0:
+                    for a_item in atks:
+                        if getattr(a_item, "id", None) == attack or getattr(a_item, "attack_id", None) == attack:
+                            base_dmg = getattr(a_item, "damage", 0)
+                            break
+
+        # 2. Stage-based estimation fallback if Card DB damage is missing
+        if base_dmg <= 0 and attacker_card:
+            if getattr(attacker_card, "megaEx", False) or "mega" in getattr(attacker_card, "name", "").lower():
                 base_dmg = 120
-            elif getattr(attacker_card, 'ex', False):
+            elif getattr(attacker_card, "ex", False) or "ex" in getattr(attacker_card, "name", "").lower():
                 base_dmg = 80
-            elif getattr(attacker_card, 'stage1', False):
-                base_dmg = 60
-            elif getattr(attacker_card, 'stage2', False):
+            elif getattr(attacker_card, "stage2", False):
                 base_dmg = 100
+            elif getattr(attacker_card, "stage1", False):
+                base_dmg = 60
             else:
                 base_dmg = 30
-        else:
-            base_dmg = 30
     else:
-        base_dmg = getattr(attack, 'damage', 0)
+        base_dmg = getattr(attack, "damage", 0)
 
     if base_dmg <= 0 or not defender_card:
         return max(0, base_dmg)
 
-    # Weakness: double damage if type matches
-    weakness = getattr(defender_card, 'weakness', None)
+    # Weakness: W = 2 if attacker element matches defender weakness
+    weakness = getattr(defender_card, "weakness", None)
     if weakness:
         w_str = str(weakness).upper()
-        atk_type = str(getattr(attacker_card, 'energyType', getattr(attacker_card, 'element_type', ''))).upper()
+        atk_type = str(getattr(attacker_card, "energyType", getattr(attacker_card, "element_type", ""))).upper()
         if atk_type and atk_type in w_str:
             base_dmg *= 2
 
-    # Resistance: reduce damage
-    resistance = getattr(defender_card, 'resistance', None)
+    # Resistance: Subtract resistance penalty (e.g. -20)
+    resistance = getattr(defender_card, "resistance", None)
     if resistance:
         r_str = str(resistance)
         matches = re.findall(r"-\d+", r_str)
@@ -604,14 +635,26 @@ def score_option(opt: Option, obs: Observation, plan: AttackPlan) -> int:
     if opt_type_str == "ABILITY" or opt_type == OptionType.ABILITY:
         return 4000
 
-    # RETREAT (Bench-aware retreat: +4,200 only if active HP < 40% and healthy bench attacker ready; -1,000 if unsafe)
+    # RETREAT (Decision-theoretic retreat: +4,200 if active HP <= incoming opponent max damage and healthy bench attacker ready)
     if opt_type_str == "RETREAT" or opt_type == OptionType.RETREAT:
         my_act = obs.my_active[0] if obs.my_active else None
         my_card = plan.my_active_card
+        opp_card = plan.opp_active_card
         if my_act and my_card and my_card.hp > 0:
             hp_ratio = my_act.hp / float(my_card.hp)
-            has_bench_ready = any(b.hp >= 80 for b in obs.my_bench)
-            if hp_ratio < 0.4 and has_bench_ready:
+            has_bench_ready = any(getattr(b, 'hp', 0) >= 80 for b in obs.my_bench)
+
+            # Calculate worst-case incoming damage next turn
+            incoming_dmg = 0
+            if opp_card and hasattr(opp_card, 'attacks'):
+                atks = getattr(opp_card, 'attacks', [])
+                if isinstance(atks, (list, tuple)):
+                    for atk in atks:
+                        dmg = compute_effective_damage(atk, opp_card, my_card)
+                        if dmg > incoming_dmg:
+                            incoming_dmg = dmg
+
+            if (my_act.hp <= incoming_dmg or hp_ratio < 0.4) and has_bench_ready:
                 return 4200
         return -1000
 
