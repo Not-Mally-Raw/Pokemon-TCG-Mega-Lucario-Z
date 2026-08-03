@@ -93,13 +93,103 @@ def _card_stage(card) -> str:
     return " ".join(parts)
 
 
+def _select_options(select_obj: Any) -> List[Any]:
+    """Defensively extract options list from Select object or dict (handles options vs option)."""
+    if not select_obj:
+        return []
+    if isinstance(select_obj, dict):
+        opts = select_obj.get("options", select_obj.get("option", [])) or []
+        return list(opts) if isinstance(opts, (list, tuple)) else []
+    for attr in ("options", "option"):
+        val = getattr(select_obj, attr, None)
+        if val is not None and isinstance(val, (list, tuple)):
+            return list(val)
+    return []
+
+
+def _select_max_count(select_obj: Any) -> int:
+    """Defensively extract max_count from Select object or dict (handles maxCount vs max_count)."""
+    if not select_obj:
+        return 1
+    if isinstance(select_obj, dict):
+        val = select_obj.get("maxCount", select_obj.get("max_count", 1))
+        return int(val) if val is not None else 1
+    for attr in ("maxCount", "max_count"):
+        val = getattr(select_obj, attr, None)
+        if val is not None:
+            try:
+                return int(val)
+            except Exception:
+                pass
+    return 1
+
+
+def _select_min_count(select_obj: Any) -> int:
+    """Defensively extract min_count from Select object or dict (handles minCount vs min_count)."""
+    if not select_obj:
+        return 1
+    if isinstance(select_obj, dict):
+        val = select_obj.get("minCount", select_obj.get("min_count", 1))
+        return int(val) if val is not None else 1
+    for attr in ("minCount", "min_count"):
+        val = getattr(select_obj, attr, None)
+        if val is not None:
+            try:
+                return int(val)
+            except Exception:
+                pass
+    return 1
+
+
+def _opt_type(opt: Any) -> Any:
+    """Defensively extract option type from Option object or dict (handles type vs option_type vs optionType)."""
+    if not opt:
+        return None
+    if isinstance(opt, dict):
+        return opt.get("type", opt.get("option_type", opt.get("optionType")))
+    for attr in ("option_type", "optionType", "type"):
+        val = getattr(opt, attr, None)
+        if val is not None:
+            return val
+    return None
+
+
 def _wrap_obs(obs):
     """Adapt Kaggle Observation (obs.current.players[]) to the flat format our engine expects."""
-    if hasattr(obs, 'my_active'):
+    if not obs:
         return obs
+
+    # Normalize select object so options, max_count, min_count are always present
+    raw_sel = getattr(obs, 'select', None)
+    wrapped_sel = None
+    if raw_sel:
+        opts = _select_options(raw_sel)
+        max_c = _select_max_count(raw_sel)
+        min_c = _select_min_count(raw_sel)
+        ctx = getattr(raw_sel, 'context', None)
+        if isinstance(raw_sel, dict):
+            ctx = raw_sel.get('context')
+        wrapped_sel = SimpleNamespace(
+            options=opts,
+            option=opts,
+            max_count=max_c,
+            maxCount=max_c,
+            min_count=min_c,
+            minCount=min_c,
+            context=ctx,
+        )
+
+    if hasattr(obs, 'my_active'):
+        if wrapped_sel:
+            obs.select = wrapped_sel
+        return obs
+
     state = getattr(obs, 'current', None)
     if not state or not hasattr(state, 'players') or len(state.players) < 2:
+        if wrapped_sel:
+            obs.select = wrapped_sel
         return obs
+
     yi = getattr(state, 'yourIndex', 0)
     my_ps = state.players[yi]
     opp_ps = state.players[1 - yi]
@@ -119,7 +209,7 @@ def _wrap_obs(obs):
     opp_bench = [_wrap_pkmn(p) for p in getattr(opp_ps, 'bench', [])]
 
     return SimpleNamespace(
-        select=obs.select,
+        select=wrapped_sel,
         current=state,
         my_state=SimpleNamespace(
             bench_max=getattr(my_ps, 'benchMax', getattr(my_ps, 'bench_max', 5)),
