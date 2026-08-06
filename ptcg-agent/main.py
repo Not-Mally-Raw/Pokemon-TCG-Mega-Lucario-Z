@@ -428,15 +428,13 @@ def compute_effective_damage(attack, attacker_card, defender_card) -> int:
         if atk_type and atk_type in w_str:
             base_dmg *= 2
 
-    # Resistance: Subtract resistance penalty (e.g. -20)
+    # Resistance: Subtract resistance penalty (e.g. -20) if present
     resistance = getattr(defender_card, "resistance", None)
     if resistance:
         r_str = str(resistance)
         matches = re.findall(r"-\d+", r_str)
         if matches:
             base_dmg = max(0, base_dmg - abs(int(matches[0])))
-        else:
-            base_dmg = max(0, base_dmg - 20)
 
     return base_dmg
 
