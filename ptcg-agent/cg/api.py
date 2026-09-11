@@ -1,495 +1,642 @@
-"""
-Native cg.api Engine module for Pokemon TCG AI Battle.
-Provides ground-truth Enums, Dataclasses, to_observation_class(), and all_card_data().
-"""
+﻿from dataclasses import dataclass
+from enum import IntEnum
+import json
+import ctypes
 
-import os
-import csv
-import functools
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from .sim import lib
+from .utils import to_dataclass, json_to_dataclass
 
-# =============================================================================
-# 1. ENUMS (Ground Truth from Kaggle ptcg_engine)
-# =============================================================================
+#region Enums
 
-class OptionType(Enum):
-    NUMBER = "0"
-    YES = "1"
-    NO = "2"
-    CARD = "3"
-    TOOL_CARD = "4"
-    ENERGY_CARD = "5"
-    ENERGY = "6"
-    PLAY = "7"
-    ATTACH = "8"
-    EVOLVE = "9"
-    ABILITY = "10"
-    DISCARD = "11"
-    RETREAT = "12"
-    ATTACK = "13"
-    END = "14"
-    SKILL = "15"
-    SPECIAL_CONDITION = "16"
+class AreaType(IntEnum):
+    DECK = 1,
+    HAND = 2,
+    DISCARD = 3, # Discard Pile
+    ACTIVE = 4, # Active Spot
+    BENCH = 5,
+    PRIZE = 6,
+    STADIUM = 7,
+    ENERGY = 8,
+    TOOL = 9,
+    PRE_EVOLUTION = 10, # The pre-evolved form of the Pokémon in play.
+    PLAYER = 11,
+    LOOKING = 12, # The card you are looking.
 
-class SelectType(Enum):
-    MAIN = "0"
-    CARD = "1"
-    ATTACHED_CARD = "2"
-    CARD_OR_ATTACHED_CARD = "3"
-    ENERGY = "4"
-    SKILL = "5"
-    ATTACK = "6"
-    EVOLVE = "7"
-    COUNT = "8"
-    YES_NO = "9"
-    SPECIAL_CONDITION = "10"
-    POKEMON = "11"
-    SELECT = "12"
-    ABILITY = "13"
+class EnergyType(IntEnum):
+    COLORLESS = 0,
+    GRASS = 1,
+    FIRE = 2,
+    WATER = 3,
+    LIGHTNING = 4,
+    PSYCHIC = 5,
+    FIGHTING = 6,
+    DARKNESS = 7,
+    METAL = 8,
+    DRAGON = 9,
+    RAINBOW = 10, # Every Types
+    TEAM_ROCKET = 11, # PSYCHIC and DARKNESS 
 
-class AreaType(Enum):
-    DECK = "1"
-    HAND = "2"
-    DISCARD = "3"
-    ACTIVE = "4"
-    BENCH = "5"
-    PRIZE = "6"
-    STADIUM = "7"
-    ENERGY = "8"
-    TOOL = "9"
-    PRE_EVOLUTION = "10"
-    PLAYER = "11"
-    LOOKING = "12"
+class CardType(IntEnum):
+    POKEMON = 0,
+    ITEM = 1,
+    TOOL = 2, # Pokémon Tool
+    SUPPORTER = 3,
+    STADIUM = 4,
+    BASIC_ENERGY = 5,
+    SPECIAL_ENERGY = 6,
 
-class SelectContext(Enum):
-    MAIN = "0"
-    SETUP_ACTIVE_POKEMON = "1"
-    SETUP_BENCH_POKEMON = "2"
-    SWITCH = "3"
-    TO_ACTIVE = "4"
-    TO_BENCH = "5"
-    TO_FIELD = "6"
-    TO_HAND = "7"
-    DISCARD = "8"
-    TO_DECK = "9"
-    TO_DECK_BOTTOM = "10"
-    TO_PRIZE = "11"
-    NOT_MOVE = "12"
-    DAMAGE_COUNTER = "13"
-    DAMAGE_COUNTER_ANY = "14"
-    DAMAGE = "15"
-    REMOVE_DAMAGE_COUNTER = "16"
-    HEAL = "17"
-    EVOLVES_FROM = "18"
-    EVOLVES_TO = "19"
-    DEVOLVE = "20"
-    ATTACH_FROM = "21"
-    ATTACH_TO = "22"
-    DETACH_FROM = "23"
-    LOOK = "24"
-    EFFECT_TARGET = "25"
-    DISCARD_ENERGY_CARD = "26"
-    DISCARD_TOOL_CARD = "27"
-    SWITCH_ENERGY_CARD = "28"
-    DISCARD_CARD_OR_ATTACHED_CARD = "29"
-    DISCARD_ENERGY = "30"
-    TO_HAND_ENERGY = "31"
-    TO_DECK_ENERGY = "32"
-    SWITCH_ENERGY = "33"
-    SKILL_ORDER = "34"
-    ATTACK = "35"
-    DISABLE_ATTACK = "36"
-    EVOLVE = "37"
-    DRAW_COUNT = "38"
-    DAMAGE_COUNTER_COUNT = "39"
-    REMOVE_DAMAGE_COUNTER_COUNT = "40"
-    IS_FIRST = "41"
-    MULLIGAN = "42"
-    ACTIVATE = "43"
-    FIRST_EFFECT = "44"
-    MORE_DEVOLVE = "45"
-    COIN_HEAD = "46"
-    AFFECT_SPECIAL_CONDITION = "47"
-    RECOVER_SPECIAL_CONDITION = "48"
+class SpecialConditionType(IntEnum):
+    POISON = 0,
+    BURN = 1,
+    SLEEP = 2,
+    PARALYZE = 3,
+    CONFUSE = 4,
 
-class CardType(Enum):
-    POKEMON = "POKEMON"
-    TRAINER = "TRAINER"
-    ENERGY = "ENERGY"
+class SelectType(IntEnum):
+    MAIN = 0, # OptionType: PLAY, ATTACH, EVOLVE, ABILITY, DISCARD, RETREAT, ATTACK, END
+    CARD = 1, # OptionType: CARD
+    ATTACHED_CARD = 2, # OptionType: TOOL_CARD, ENERGY_CARD
+    CARD_OR_ATTACHED_CARD = 3, # OptionType: CARD, TOOL_CARD, ENERGY_CARD
+    ENERGY = 4, # OptionType: ENERGY
+    SKILL = 5, # OptionType: SKILL
+    ATTACK = 6, # OptionType: ATTACK
+    EVOLVE = 7, # OptionType: EVOLVE
+    COUNT = 8, # OptionType: NUMBER
+    YES_NO = 9, # OptionType: YES, NO
+    SPECIAL_CONDITION = 10, # OptionType: SPECIAL_CONDITION
+    
+class SelectContext(IntEnum):
+    MAIN = 0, # Main. Main selection.
+    SETUP_ACTIVE_POKEMON = 1, # Card. Select the Pokémon to put into your Active Spot during Set Up.
+    SETUP_BENCH_POKEMON = 2, # Card. Select the Pokémon to put onto your Bench during Set Up.
+    SWITCH = 3, # Card. Select the Pokémon to swap with the one in your Active Spot.
+    TO_ACTIVE = 4, # Card. Select the Pokémon to put into your Active Spot.
+    TO_BENCH = 5, # Card. Select the Pokémon to put onto your Bench.
+    TO_FIELD = 6, # Card. Select the Pokémon to put into play.
+    TO_HAND = 7, # Card. Select the card to add to your hand.
+    DISCARD = 8, # Card. Select the card to discard.
+    TO_DECK = 9, # Card. Select the card to return to your deck.
+    TO_DECK_BOTTOM = 10, # Card. Select the card to return to the bottom of your deck.
+    TO_PRIZE = 11, # Card. Select the card to add to your prize.
+    NOT_MOVE = 12, # Card. Select the card to remain where it is.
+    DAMAGE_COUNTER = 13, # Card. Select the Pokémon to place damage counters on.
+    DAMAGE_COUNTER_ANY = 14, # Card. Select the Pokémon to place damage counters on using the effect that lets you place them as you like.
+    DAMAGE = 15, # Card. Select the Pokémon to deal damage.
+    REMOVE_DAMAGE_COUNTER = 16, # Card. Select the Pokémon to remove damage counters from.
+    HEAL = 17, # Card. Select the Pokémon to heal.
+    EVOLVES_FROM = 18, # Card. Select the Pokémon to evolve from.
+    EVOLVES_TO = 19, # Card. Select the Pokémon to evolve into.
+    DEVOLVE = 20, # Card. Select the Pokémon to devolve.
+    ATTACH_FROM = 21, # Card. Select the Pokémon to attach the card to.
+    ATTACH_TO = 22, # Card. Select the card to attach to the Pokémon.
+    DETACH_FROM = 23, # Card. Select the Pokémon to remove the card from.
+    LOOK = 24, # Card. Select the card to look at.
+    EFFECT_TARGET = 25, # Card. Select the card to apply the effect to.
+    DISCARD_ENERGY_CARD = 26, # AttachedCard. Select the Energy card to discard.
+    DISCARD_TOOL_CARD = 27, # AttachedCard. Select the Pokémon tool to trash.
+    SWITCH_ENERGY_CARD = 28, # AttachedCard. Select the energy card to replace.
+    DISCARD_CARD_OR_ATTACHED_CARD = 29, # CardOrAttachedCard. Select the card to discard.
+    DISCARD_ENERGY = 30, # Energy. Select the energy to discard.
+    TO_HAND_ENERGY = 31, # Energy. Select the energy to return to your hand.
+    TO_DECK_ENERGY = 32, # Energy. Select the energy to return to the deck.
+    SWITCH_ENERGY = 33, # Energy. Select the energy to switch.
+    SKILL_ORDER = 34, # Skill. Select the order of effect activation.
+    ATTACK = 35, # Attack. Select the Attack to use.
+    DISABLE_ATTACK = 36, # Attack. Select the Attack to disable.
+    EVOLVE = 37, # Evolve. Select the Pokémon that is the evolution source and the Pokémon that is the evolution target.
+    DRAW_COUNT = 38, # Count. Select how many cards to draw.
+    DAMAGE_COUNTER_COUNT = 39, # Count. Select how many damage counters to place.
+    REMOVE_DAMAGE_COUNTER_COUNT = 40, # Count. Select how many damage counters to remove.
+    IS_FIRST = 41, # YesNo. Would you like to go first?
+    MULLIGAN = 42, # YesNo. Would you like to redraw the cards?
+    ACTIVATE = 43, # YesNo. Would you like to activate the effect?
+    FIRST_EFFECT = 44, # YesNo. Would you like to select the first effect?
+    MORE_DEVOLVE = 45, # YesNo. Do you want to devolve it further?
+    COIN_HEAD = 46, # YesNo. Do you want to choose heads?
+    AFFECT_SPECIAL_CONDITION = 47, # SpecialCondition. Choose the special condition to affect.
+    RECOVER_SPECIAL_CONDITION = 48, # SpecialCondition. Choose the special condition to recover.
+    # Please note that new elements may be appended to the Enum during the competition.
 
-class EnergyType(Enum):
-    GRASS = "GRASS"
-    FIRE = "FIRE"
-    WATER = "WATER"
-    LIGHTNING = "LIGHTNING"
-    PSYCHIC = "PSYCHIC"
-    FIGHTING = "FIGHTING"
-    DARKNESS = "DARKNESS"
-    METAL = "METAL"
-    DRAGON = "DRAGON"
-    COLORLESS = "COLORLESS"
+class OptionType(IntEnum):
+    # number (int):Count.
+    NUMBER = 0, # Number to select.
+
+    YES = 1, # Select Yes.
+
+    NO = 2, # Select No.
+
+    # area (AreaType):Area where the card is located.
+    # index (int):Index within the area.
+    # playerIndex (int):The owning player of the card.
+    CARD = 3, # Card to select.
+
+    # area (AreaType):Area of the attached Pokémon.
+    # index (int):Index within the area of the attached Pokémon.
+    # playerIndex (int):The owning player of the Pokémon.
+    # toolIndex (int):Index within the tool.
+    TOOL_CARD = 4, # Pokémon Tool Card to select.
+
+    # area (AreaType):Area of the attached Pokémon.
+    # index (int):Index within the area of the attached Pokémon.
+    # playerIndex (int):The owning player of the Pokémon.
+    # energyIndex (int):Index within the energy card.
+    ENERGY_CARD = 5, # Energy Card to select.
+
+    # area (AreaType):Area of the attached Pokémon.
+    # index (int):Index within the area of the attached Pokémon.
+    # playerIndex (int):The owning player of the Pokémon.
+    # energyIndex (int):Index within the energy card.
+    # count (int):How many energy units does it correspond to?
+    ENERGY = 6, # Energy to select.
+
+    # index (int):Index within the hand.
+    PLAY = 7, # Play a card from your hand.
+
+    # area (AreaType):Area of the card to attach.
+    # index (int):Index within the area of the card to attach.
+    # inPlayArea (AreaType):Area of the Pokémon on the field.
+    # inPlayIndex (int):Index within the area of the Pokémon on the field.
+    ATTACH = 8, # Attach a card to a Pokémon.
+
+    # area (AreaType):Area of the evolved card.
+    # index (int):Index within the area of the evolved card.
+    # inPlayArea (AreaType):Area of the Pokémon on the field.
+    # inPlayIndex (int):Index within the area of the Pokémon on the field.
+    EVOLVE = 9, # Select an Evolution.
+
+    # area (AreaType):Area where the card is located.
+    # index (int):Index within the area.
+    ABILITY = 10, # Use an Ability.
+
+    # area (AreaType):Area where the card is located.
+    # index (int):Index within the area.
+    DISCARD = 11, # Discard a card in play.
+
+    RETREAT = 12, # Retreat Active Pokémon.
+
+    # attackId (int):Attack ID
+    ATTACK = 13, # Select an Attack.
+
+    END = 14, # Turn End.
+
+    # cardId (int):Card ID. When the Card ID is 0, it means handling a Special Condition.
+    # serial (int):Card serial
+    SKILL = 15, # Select the order of card skills.
+
+    # specialConditionType (SpecialConditionType):Special Condition Type
+    SPECIAL_CONDITION = 16, # Select the Special Condition.
+
+class LogType(IntEnum):
+    # playerIndex (int)
+    SHUFFLE = 0, # Shuffle deck.
+
+    # playerIndex (int)
+    # hasBasicPokemon (bool):If false, then no Basic Pokémon exist.
+    HAS_BASIC_POKEMON = 1,
+
+    # playerIndex (int)
+    TURN_START = 2, # Start turn.
+
+    # playerIndex (int)
+    TURN_END = 3, # End turn.
+
+    # playerIndex (int)
+    # cardId (int):Drawn card ID
+    # serial (int):Drawn card serial
+    DRAW = 4, # Drew a card from deck.
+
+    # playerIndex (int)
+    DRAW_REVERSE = 5, # Your opponent drew a card from their deck.
+
+    # playerIndex (int)
+    # cardId (int):Moved card. ID
+    # serial (int):Moved card. serial
+    # fromArea (AreaType):Area before movement.
+    # toArea (AreaType):Area after movement.
+    MOVE_CARD = 6, # A card moved.
+
+    # playerIndex (int)
+    # fromArea (AreaType):Area before movement.
+    # toArea (AreaType):Area after movement.
+    MOVE_CARD_REVERSE = 7, # A card moved face-down.
+
+    # playerIndex (int)
+    # cardIdActive (int):Moving to the Bench Pokémon ID
+    # serialActive (int):Moving to the Bench Pokémon serial
+    # cardIdBench (int):Moving to the Active Pokémon ID
+    # serialBench (int):Moving to the Active Pokémon serial
+    SWITCH = 8, # Pokémon were switched.
+
+    # playerIndex (int)
+    # cardIdBefore (int):Pokémon before change. ID
+    # serialBefore (int):Pokémon before change. serial
+    # cardIdAfter (int):Pokémon after change. ID
+    # serialAfter (int):Pokémon after change. serial
+    CHANGE = 9, # Change the Pokémon.
+
+    # playerIndex (int)
+    # cardId (int):Played card ID
+    # serial (int):Played card serial
+    PLAY = 10, # Played a card from hand.
+
+    # playerIndex (int)
+    # cardId (int):Attached card ID
+    # serial (int):Attached card serial
+    # cardIdTarget (int):Pokémon card ID
+    # serialTarget (int):Pokémon card serial
+    ATTACH = 11, # Attached a card to a Pokémon.
+
+    # playerIndex (int)
+    # cardId (int):Evolved card ID
+    # serial (int):Evolved card serial
+    # cardIdTarget (int):Pokémon card ID
+    # serialTarget (int):Pokémon card serial
+    EVOLVE = 12, # Evolved a Pokémon.
+
+    # playerIndex (int)
+    # cardId (int):Devolved card ID
+    # serial (int):Devolved card serial
+    # cardIdTarget (int):Pokémon card ID
+    # serialTarget (int):Pokémon card serial
+    DEVOLVE = 13, # Devolved a Pokémon.
+
+    # playerIndex (int)
+    # cardId (int):Attached card ID
+    # serial (int):Attached card serial
+    # cardIdBefore (int):Pokémon that were attached with cards. ID
+    # serialBefore (int):Pokémon that were attached with cards. serial
+    # cardIdAfter (int):Pokémon that were newly attached with cards. ID
+    # serialAfter (int):Pokémon that were newly attached with cards. serial
+    MOVE_ATTACHED = 14, # Move the attached card.
+
+    # playerIndex (int)
+    # cardId (int):Pokémon that use attack. ID
+    # serial (int):Pokémon that use attack. serial
+    # attackId (int):Attack ID
+    ATTACK = 15, # Pokémon Attack.
+
+    # playerIndex (int)
+    # cardId (int):HP changed card ID
+    # serial (int):HP changed card serial
+    # value (int):Amount of change.
+    # putDamageCounter (bool):True if the HP change is due to the effect of placing a damage counter.
+    HP_CHANGE = 16, # A Pokémon’s HP changed.
+
+    # playerIndex (int)
+    # isRecover (bool):If true, the special condition has been recovered.
+    # cardId (int): ID
+    # serial (int): serial
+    POISONED = 17, # Poisoned.
+
+    # playerIndex (int)
+    # isRecover (bool):If true, the special condition has been recovered.
+    # cardId (int): ID
+    # serial (int): serial
+    BURNED = 18, # Burned.
+
+    # playerIndex (int)
+    # isRecover (bool):If true, the special condition has been recovered.
+    # cardId (int): ID
+    # serial (int): serial
+    ASLEEP = 19, # Fell asleep.
+
+    # playerIndex (int)
+    # isRecover (bool):If true, the special condition has been recovered.
+    # cardId (int): ID
+    # serial (int): serial
+    PARALYZED = 20, # Paralyzed.
+
+    # playerIndex (int)
+    # isRecover (bool):If true, the special condition has been recovered.
+    # cardId (int): ID
+    # serial (int): serial
+    CONFUSED = 21, # Confused.
+
+    # playerIndex (int)
+    # head (bool):True if coin is head.
+    COIN = 22, # Result of the coin flip.
+
+    # result (int):If 0, the player with player index 0 wins; if 1, the player with player index 1 wins; if 2, it's a draw.
+    # reason (int):1: 0 Prize cards. 2: Start turn with 0 deck cards. 3: No Pokémon in Active Spot. 4: A card effect.
+    RESULT = 23, # Result of the match.
+    
+    # Please note that new elements may be appended to the Enum during the competition.
+
+#endregion Enums
 
 
-def _to_enum(val: Any, enum_cls: Any) -> Any:
-    if val is None:
-        return None
-    if isinstance(val, enum_cls):
-        return val
-    if hasattr(val, "name") and hasattr(enum_cls, val.name):
-        return getattr(enum_cls, val.name)
-    s = str(val)
-    for member in enum_cls:
-        if member.name == s or str(member.value) == s:
-            return member
-    return val
+# Please note that new attributes may be appended to each class during the competition.
 
-# =============================================================================
-# 2. DATACLASSES
-# =============================================================================
-
-@dataclass
-class Attack:
-    name: str = ""
-    cost: str = ""
-    damage: int = 0
-    effect: str = ""
-    energy_count: int = 0
+#region Observation class
 
 @dataclass
 class Card:
-    card_id: int = 0
-    name: str = ""
-    stage: str = ""
-    hp: int = 0
-    element_type: str = ""
-    types: List[str] = field(default_factory=list)
-    weakness: str = ""
-    resistance: str = ""
-    retreat_cost: int = 0
-    previous_stage: str = ""
-    attacks: List[Attack] = field(default_factory=list)
-    card_type: str = ""
-
-    @property
-    def id(self) -> int:
-        return self.card_id
+    id: int  # CardData ID.
+    serial: int  # Serial Number: A unique value assigned to each card in the match.
+    playerIndex: int  # Represents which player's card.
 
 @dataclass
 class Pokemon:
-    id: int = 0
-    serial: int = 0
-    hp: int = 0
-    max_hp: int = 0
-    appear_this_turn: bool = False
-    energies: List[int] = field(default_factory=list)
-    energy_cards: List[int] = field(default_factory=list)
-    tools: List[int] = field(default_factory=list)
-    pre_evolution: List[int] = field(default_factory=list)
-
-    @property
-    def card_id(self) -> int:
-        return self.id
-
-    @property
-    def maxHp(self) -> int:
-        return self.max_hp
-
-    @property
-    def appearThisTurn(self) -> bool:
-        return self.appear_this_turn
-
+    id: int  # CardData ID.
+    serial: int  # Serial Number: A unique value assigned to each card in the match.
+    hp: int  # Current HP.
+    maxHp: int  # Current Max HP.
+    appearThisTurn: bool  # True if played this turn.
+    energies: list[EnergyType]  # Energies Array
+    energyCards: list[Card]  # Attached Energy Card Array
+    tools: list[Card]  # Attached Pokémon Tool Array
+    preEvolution: list[Card]  # Pre-evolution Card Array
+ 
 @dataclass
 class PlayerState:
-    active: List[Pokemon] = field(default_factory=list)
-    bench: List[Pokemon] = field(default_factory=list)
-    bench_max: int = 5
-    deck_count: int = 0
-    discard: List[int] = field(default_factory=list)
-    prize_count: int = 0
-    hand_count: int = 0
-    hand: List[int] = field(default_factory=list)
-    poisoned: bool = False
-    burned: bool = False
-    asleep: bool = False
-    paralyzed: bool = False
-    confused: bool = False
+    active: list[Pokemon | None]  # Active Pokémon (None if the card is facedown). The array size is either 0 or 1.
+    bench: list[Pokemon]  # Bench Pokémon.
+    benchMax: int  # Maximum Bench Count.
+    deckCount: int  # Remaining Cards in Deck.
+    discard: list[Card]  # Discard pile Card Array.
+    prize: list[Card | None]  # Prize cards (None if the card is facedown). The first element is the bottom of the prize, and the last element is the top.
+    handCount: int  # Number of Cards in Hand.
+    hand: list[Card] | None  # Hand Card Array. None for the opponent.
+    poisoned: bool # Active Pokémon is Poisoned.
+    burned: bool # Active Pokémon is Burned.
+    asleep: bool # Active Pokémon is Asleep.
+    paralyzed: bool # Active Pokémon is Paralyzed.
+    confused: bool # Active Pokémon is Confused.
+
+@dataclass
+class State:
+    turn: int  # Turn Count: 1 indicates the first turn for the starting player. 2 indicates the first turn for the second player. 3 indicates the second turn for the starting player. 0 denotes a time before the starting player's first turn.
+    turnActionCount: int  # Number of Actions Taken This Turn.
+    yourIndex: int  # Which player is making the selection? (Your Player Index.) 0 or 1.
+    firstPlayer: int  # Starting Player Index. When the starting player has not been determined, the value is -1.
+    supporterPlayed: bool  # True if a supporter has already been used this turn.
+    stadiumPlayed: bool  # True if a stadium has already been used this turn.
+    energyAttached: bool  # True if the manual Energy attachment for this turn has already been used.
+    retreated: bool  # True if retreated this turn.
+    result: int # Win player index. -1 if not battle finished.
+    stadium: list[Card]  # Stadium Card. The array size is either 0 or 1.
+    looking: list[Card | None] | None  # Looking cards (None if the card is facedown). None if not looking cards.
+    players: list[PlayerState]  # An array of player states. The number of elements is 2.
 
 @dataclass
 class Option:
-    index: int = 0
-    option_type: Optional[Union[OptionType, str]] = None
-    area: Optional[Union[AreaType, str]] = None
-    in_play_area: Optional[Union[AreaType, str]] = None
-    number: Optional[int] = None
-    player_index: Optional[int] = None
-    tool_index: Optional[int] = None
-    energy_index: Optional[int] = None
-    count: Optional[int] = None
-    in_play_index: Optional[int] = None
-    attack_id: Optional[int] = None
-    card_id: Optional[int] = None
-    serial: Optional[int] = None
-
-    @property
-    def type(self) -> Optional[Union[OptionType, str]]:
-        return self.option_type
+    type: OptionType  # Use this parameter to determine which option it is.
+    number: int | None = None
+    area: AreaType | None = None
+    index: int | None = None
+    playerIndex: int | None = None
+    toolIndex: int | None = None
+    energyIndex: int | None = None
+    count: int | None = None
+    inPlayArea: AreaType | None = None
+    inPlayIndex: int | None = None
+    attackId: int | None = None
+    cardId: int | None = None
+    serial: int | None = None
+    specialConditionType: SpecialConditionType | None = None
 
 @dataclass
-class Select:
-    select_type: Optional[Union[SelectType, str]] = None
-    context: Optional[Union[SelectContext, str]] = None
-    min_count: int = 0
-    max_count: int = 0
-    options: List[Option] = field(default_factory=list)
-
-    @property
-    def type(self) -> Optional[Union[SelectType, str]]:
-        return self.select_type
-
-    @property
-    def minCount(self) -> int:
-        return self.min_count
-
-    @property
-    def maxCount(self) -> int:
-        return self.max_count
-
+class SelectData:
+    type: SelectType  # Selection type.
+    context: SelectContext  # What is being selected?
+    minCount: int  # Minimum number of selections. It can also be 0.
+    maxCount: int  # Maximum number of selections. Never exceeds len(option).
+    remainDamageCounter: int  # Remaining number of damage counters that can be placed.
+    remainEnergyCost: int  # Used when the type is Energy. The remaining required energy count.
+    option: list[Option]  # Array of options.
+    deck: list[Card] | None  # An array of cards; None unless selecting cards from the deck.
+    contextCard: Card | None  # Which card is the selection concerning? This is sent when the context is "Activate"; otherwise, it is null.
+    effect: Card | None  # The card that is activating the effect currently being processed.
+    
+@dataclass
+class Log:
+    type: LogType  # Use this parameter to determine which log it is.
+    playerIndex: int | None = None
+    hasBasicPokemon: bool | None = None
+    cardId: int | None = None
+    serial: int | None = None
+    fromArea: AreaType | None = None
+    toArea: AreaType | None = None
+    cardIdActive: int | None = None
+    serialActive: int | None = None
+    cardIdBench: int | None = None
+    serialBench: int | None = None
+    cardIdBefore: int | None = None
+    serialBefore: int | None = None
+    cardIdAfter: int | None = None
+    serialAfter: int | None = None
+    cardIdTarget: int | None = None
+    serialTarget: int | None = None
+    attackId: int | None = None
+    value: int | None = None
+    putDamageCounter: bool | None = None
+    isRecover: bool | None = None
+    head: bool | None = None
+    result: int | None = None
+    reason: int | None = None
+    
 @dataclass
 class Observation:
-    is_setup_phase: bool = False
-    your_index: int = 0
-    turn: int = 0
-    my_state: PlayerState = field(default_factory=PlayerState)
-    opp_state: PlayerState = field(default_factory=PlayerState)
-    select: Optional[Select] = None
+    select: SelectData | None  # Selection information. At the time of the initial deck selection, it will be None.
+    logs: list[Log]  # Events that have occurred since the last selection.
+    current: State | None  # Current state. At the time of the initial deck selection, it will be None.
+    search_begin_input: str | None = None # Input to the search_begin function.
 
-    @property
-    def yourIndex(self) -> int:
-        return self.your_index
+#endregion Observation class
 
-    @property
-    def my_active(self) -> List[Pokemon]:
-        return self.my_state.active
+@dataclass
+class SearchState:
+    observation: Observation  # New observation. search_begin_input is None.
+    searchId: int  #  Search state ID.
+    
+@dataclass
+class ApiResult:
+    state: SearchState | None # Search state.
+    error: int # Error if not 0.
 
-    @property
-    def my_bench(self) -> List[Pokemon]:
-        return self.my_state.bench
+# Abilities and effects at the time of card play.
+@dataclass
+class Skill:
+    name: str  # Skill name.
+    text: str  # Explanation.
 
-    @property
-    def my_hand(self) -> List[int]:
-        return self.my_state.hand
+@dataclass
+class CardData:
+    cardId: int  # Card ID.
+    name: str  # Card name.
+    cardType: CardType  # Card type
+    retreatCost: int  # Energy cost required to retreat.
+    hp: int  # Pokémon HP.
+    weakness: EnergyType | None  # Pokémon weakness.
+    resistance: EnergyType | None  # Pokémon resistance.
+    energyType: EnergyType  # Pokémon or Basic Energy type.
+    basic: bool # True if Basic Pokémon.
+    stage1: bool # True if Stage1 Pokémon.
+    stage2: bool # True if Stage2 Pokémon.
+    ex: bool # True if Pokémon ex(include Mega Evolution Pokémon ex). When your Pokémon ex is Knocked Out, your opponent takes 2 prize cards(exclude Mega Evolution Pokémon ex).
+    megaEx: bool # True if Mega Evolution Pokémon ex. When your Mega Evolution Pokémon ex is Knocked Out, your opponent takes 3 prize cards.
+    tera: bool  # True if Tera Pokémon. Tera Pokémon take no damage from attacks as long as they are on the Bench.
+    aceSpec: bool  # True if ACE SPEC. You can't have more than 1 ACE SPEC card in your deck.
+    evolvesFrom: str | None  # If the Pokémon has evolved, then the name of its pre-evolution. Otherwise, None.
+    skills: list[Skill]  # The skills that the card has.
+    attacks: list[int]  # IDs of usable attacks.
 
-    @property
-    def my_prize_count(self) -> int:
-        return self.my_state.prize_count
+@dataclass
+class Attack:
+    attackId: int  # Attack ID.
+    name: str  # Attack name.
+    text: str  # Explanation.
+    damage: int  # Attack damage
+    energies: list[EnergyType]  # Energy required to use.
+    
 
-    @property
-    def opp_active(self) -> List[Pokemon]:
-        return self.opp_state.active
+#region functions
 
-    @property
-    def opp_bench(self) -> List[Pokemon]:
-        return self.opp_state.bench
+def all_card_data() -> list[CardData]:
+    """Return all cards."""
+    bs = lib.AllCard()
+    js = bs.decode()
+    cards = json.loads(js)
+    return [to_dataclass(v, CardData) for v in cards]
 
-    @property
-    def opp_prize_count(self) -> int:
-        return self.opp_state.prize_count
+def all_attack() -> list[Attack]:
+    """Return all attacks."""
+    bs = lib.AllAttack()
+    js = bs.decode()
+    cards = json.loads(js)
+    return [to_dataclass(v, Attack) for v in cards]
 
-# =============================================================================
-# 3. ENGINE FUNCTIONS
-# =============================================================================
+def to_observation_class(obs: dict) -> Observation:
+    """dict to Observation class.
 
-@functools.lru_cache(maxsize=1)
-def all_card_data() -> Dict[int, Card]:
-    """Build and return card database from EN_Card_Data.csv."""
-    cards: Dict[int, Card] = {}
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    search_paths = [
-        "data/EN_Card_Data.csv",
-        os.path.join(base_dir, "..", "data", "EN_Card_Data.csv"),
-        os.path.join(base_dir, "EN_Card_Data.csv"),
-        "/kaggle/input/pokemon-tcg-ai-battle/EN_Card_Data.csv",
-        "/kaggle/input/competitions/pokemon-tcg-ai-battle/EN_Card_Data.csv",
-        "/kaggle/input/pokemon-tcg-ai-battle/ptcg_engine/EN_Card_Data.csv",
-        "/kaggle/input/competitions/pokemon-tcg-ai-battle/ptcg_engine/EN_Card_Data.csv",
-        "/kaggle/input/pokemon-tcg-ai-battle-challenge-strategy/EN_Card_Data.csv",
-        "/kaggle/input/competitions/pokemon-tcg-ai-battle-challenge-strategy/EN_Card_Data.csv",
-        "/kaggle/input/pokemon-tcg-ai-battle-challenge-strategy/ptcg_engine/EN_Card_Data.csv",
-        "/kaggle/input/competitions/pokemon-tcg-ai-battle-challenge-strategy/ptcg_engine/EN_Card_Data.csv",
-        os.environ.get("CARD_DATA_PATH", ""),
-    ]
-    resolved = next((p for p in search_paths if p and os.path.exists(p)), None)
-    if not resolved:
-        return cards
+    Returns:
+        Observation: Observation dataclass instance.
+    """
+    return to_dataclass(obs, Observation)
 
-    try:
-        with open(resolved, "r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    cid_str = row.get("Card ID", "").strip()
-                    if not cid_str or not cid_str.isdigit():
-                        continue
-                    cid = int(cid_str)
-                    stage = row.get("Stage (Pokémon)/Type (Energy and Trainer)", "Unknown").strip()
-                    prev_stage = row.get("Previous stage", "n/a").strip()
-                    name = row.get("Card Name", "?").strip()
-                    hp_s = row.get("HP", "0").strip()
-                    hp = int(hp_s) if hp_s.isdigit() else 0
-                    ret_s = row.get("Retreat", "0").strip()
-                    ret = int(ret_s) if ret_s.isdigit() else 0
-                    element_type = row.get("Type", "").strip()
-                    weakness = row.get("Weakness", "").strip()
-                    resistance = row.get("Resistance (Type)", "").strip()
+def search_begin(agent_observation: Observation,
+                 your_deck: list[int],
+                 your_prize: list[int],
+                 opponent_deck: list[int],
+                 opponent_prize: list[int],
+                 opponent_hand: list[int],
+                 opponent_active: list[int],
+                 manual_coin: bool = False
+    ) -> SearchState:
+    """Begin search.
 
-                    if cid not in cards:
-                        c_type = "POKEMON" if hp > 0 or "Basic Pokémon" in stage or "Stage" in stage else ("ENERGY" if "Energy" in stage else "TRAINER")
-                        cards[cid] = Card(
-                            card_id=cid,
-                            name=name,
-                            stage=stage,
-                            hp=hp,
-                            element_type=element_type,
-                            types=[element_type] if element_type else [],
-                            weakness=weakness,
-                            resistance=resistance,
-                            retreat_cost=ret,
-                            previous_stage=prev_stage,
-                            attacks=[],
-                            card_type=c_type,
-                        )
+    Args:
+        agent_observation: You must input the observation argument passed to your agent function exactly as is.
+        your_deck: Predicted Card ID your Deck. It must have the same number of cards as your deck. If Observation.select.deck != None, ignored this.
+        your_prize: Predicted Card ID your Prize cards. It must have the same number of cards as your prize.
+        opponent_deck: Predicted Card ID opponent's deck. It must have the same number of cards as opponent's deck. At setup, at least one Basic Pokémon card is required.
+        opponent_prize: Predicted Card ID opponent's prize cards. It must have the same number of cards as opponent's prize.
+        opponent_hand: Predicted Card ID opponent's hand. It must have the same number of cards as opponent's hand.
+        opponent_active: Predicted Card ID opponent's Active Pokémon. Only if there is a face-down Pokémon in your opponent’s Active Spot. This ID must be a Pokémon card ID.
+        manual_coin: If True, the coin's heads or tails can be chosen.
 
-                    mv = row.get("Move Name", "").strip()
-                    if mv and mv != "n/a" and not mv.startswith("[Ability]"):
-                        ds = "".join(c for c in row.get("Damage", "0") if c.isdigit())
-                        cost_str = row.get("Cost", "").strip()
-                        energy_count = cost_str.count("{")
-                        cards[cid].attacks.append(
-                            Attack(
-                                name=mv,
-                                cost=cost_str,
-                                damage=int(ds) if ds else 0,
-                                effect=row.get("Effect Explanation", "").strip(),
-                                energy_count=energy_count,
-                            )
-                        )
-                except ValueError:
-                    continue
-    except Exception:
-        pass
-    return cards
+    Returns:
+        SearchState: Root search state.
+    """
+    global agent_ptr
+    
+    if "agent_ptr" not in globals():
+        agent_ptr = lib.AgentStart()
+    
+    sbi = agent_observation.search_begin_input
+    if sbi == None:
+        raise ValueError("Not agent observation.")
 
+    state = agent_observation.current
+    your_index = state.yourIndex
 
-def _parse_pokemon(raw: Any) -> Pokemon:
-    if not raw:
-        return Pokemon()
-    p = Pokemon()
-    if isinstance(raw, dict):
-        p.id = int(raw.get("id", 0) or 0)
-        p.serial = int(raw.get("serial", 0) or 0)
-        p.hp = int(raw.get("hp", 0) or 0)
-        p.max_hp = int(raw.get("maxHp", raw.get("max_hp", 0)) or 0)
-        p.appear_this_turn = bool(raw.get("appearThisTurn", raw.get("appear_this_turn", False)))
-        energies = raw.get("energies", [])
-        if isinstance(energies, (list, tuple)):
-            p.energies = [int(e) for e in energies if e is not None]
-        energy_cards = raw.get("energyCards", raw.get("energy_cards", []))
-        if isinstance(energy_cards, (list, tuple)):
-            p.energy_cards = [int(c.get("id", 0) if isinstance(c, dict) else c) for c in energy_cards if c]
-        tools = raw.get("tools", [])
-        if isinstance(tools, (list, tuple)):
-            p.tools = [int(c.get("id", 0) if isinstance(c, dict) else c) for c in tools if c]
-        pre_ev = raw.get("preEvolution", raw.get("pre_evolution", []))
-        if isinstance(pre_ev, (list, tuple)):
-            p.pre_evolution = [int(c.get("id", 0) if isinstance(c, dict) else c) for c in pre_ev if c]
-    elif hasattr(raw, "id"):
-        p.id = getattr(raw, "id", 0)
-        p.serial = getattr(raw, "serial", 0)
-        p.hp = getattr(raw, "hp", 0)
-        p.max_hp = getattr(raw, "max_hp", getattr(raw, "maxHp", 0))
-    return p
-
-
-def _parse_player_state(raw: Any) -> PlayerState:
-    if not raw or not isinstance(raw, dict):
-        return PlayerState()
-    s = PlayerState()
-    s.active = [_parse_pokemon(x) for x in raw.get("active", []) or [] if x]
-    s.bench = [_parse_pokemon(x) for x in raw.get("bench", []) or [] if x]
-    s.bench_max = int(raw.get("benchMax", raw.get("bench_max", 5)) or 5)
-    s.deck_count = int(raw.get("deckCount", raw.get("deck_count", 0)) or 0)
-    discard = raw.get("discard", []) or []
-    s.discard = [int(c.get("id", 0) if isinstance(c, dict) else c) for c in discard if c]
-    s.hand_count = int(raw.get("handCount", raw.get("hand_count", 0)) or 0)
-    hand = raw.get("hand", []) or []
-    s.hand = [int(c.get("id", 0) if isinstance(c, dict) else c) for c in hand if c]
-    prize = raw.get("prize", []) or []
-    s.prize = prize if isinstance(prize, list) else []
-    s.prize_count = len(s.prize) if s.prize else int(raw.get("prizeCount", raw.get("prize_count", 0)) or 0)
-    s.poisoned = bool(raw.get("poisoned", False))
-    s.burned = bool(raw.get("burned", False))
-    s.asleep = bool(raw.get("asleep", False))
-    s.paralyzed = bool(raw.get("paralyzed", False))
-    s.confused = bool(raw.get("confused", False))
-    return s
-
-
-def _parse_option(raw: Any, idx: int) -> Option:
-    o = Option(index=idx)
-    if not raw or not isinstance(raw, dict):
-        return o
-    o.option_type = _to_enum(raw.get("type"), OptionType)
-    o.area = _to_enum(raw.get("area"), AreaType)
-    o.in_play_area = _to_enum(raw.get("inPlayArea"), AreaType)
-    for field_name in ["number", "player_index", "tool_index", "energy_index", "count", "in_play_index", "attack_id", "card_id", "serial"]:
-        camel = field_name if "_" not in field_name else field_name.split("_")[0] + "".join(p.capitalize() for p in field_name.split("_")[1:])
-        v = raw.get(camel, raw.get(field_name))
-        if v is not None:
-            try:
-                setattr(o, field_name, int(v))
-            except Exception:
-                pass
-    if o.in_play_index is None and raw.get("index") is not None:
-        try:
-            o.in_play_index = int(raw["index"])
-        except Exception:
-            pass
-    return o
-
-
-def to_observation_class(obs_dict: Any) -> Observation:
-    """Convert raw observation dictionary into a typed Observation instance."""
-    if isinstance(obs_dict, Observation):
-        return obs_dict
-    obs = Observation()
-    if not obs_dict or not isinstance(obs_dict, dict):
-        obs.is_setup_phase = True
-        return obs
-
-    rc = obs_dict.get("current")
-    if isinstance(rc, dict):
-        obs.your_index = int(rc.get("yourIndex", rc.get("your_index", 0)) or 0)
-        obs.turn = int(rc.get("turn", 0) or 0)
-        players = rc.get("players", [])
-        if isinstance(players, (list, tuple)) and len(players) > 0:
-            my_idx = obs.your_index if len(players) > obs.your_index else 0
-            opp_idx = 1 - my_idx if len(players) > 1 - my_idx else 1
-            obs.my_state = _parse_player_state(players[my_idx] if len(players) > my_idx else None)
-            obs.opp_state = _parse_player_state(players[opp_idx] if len(players) > opp_idx else None)
-
-    rs = obs_dict.get("select")
-    if isinstance(rs, dict) and rs:
-        obs.select = Select()
-        obs.select.select_type = _to_enum(rs.get("type"), SelectType)
-        obs.select.context = _to_enum(rs.get("context"), SelectContext)
-        obs.select.min_count = int(rs.get("minCount", rs.get("min_count", 0)) or 0)
-        obs.select.max_count = int(rs.get("maxCount", rs.get("max_count", 0)) or 0)
-        raw_opts = rs.get("option", rs.get("options", []))
-        if isinstance(raw_opts, (list, tuple)):
-            obs.select.options = [_parse_option(o, i) for i, o in enumerate(raw_opts)]
+    if agent_observation.select.deck != None:
+        your_deck = []
+    elif len(your_deck) < state.players[your_index].deckCount:
+        raise ValueError("your_deck does not match the number of cards in your deck.")
+    
+    if len(your_prize) < len(state.players[your_index].prize):
+        raise ValueError("your_prize does not match the number of cards in your prize.")
+    elif len(opponent_deck) < state.players[1 - your_index].deckCount:
+        raise ValueError("opponent_deck does not match the number of cards in opponent's deck.")
+    elif len(opponent_prize) < len(state.players[1 - your_index].prize):
+        raise ValueError("opponent_prize does not match the number of cards in opponent's prize.")
+    elif len(opponent_hand) < state.players[1 - your_index].handCount:
+        raise ValueError("opponent_hand does not match the number of cards in opponent's hand.")
+    
+    active = state.players[1 - your_index].active
+    if len(active) > 0 and active[0] == None:
+        if len(opponent_active) == 0:
+            raise ValueError("You need to predict the opponent's Active Pokémon.")
     else:
-        obs.select = None
-        obs.is_setup_phase = True
+        opponent_active = []
+    
+    bs = lib.SearchBegin(agent_ptr,
+                         sbi.encode("ascii"),
+                         len(sbi),
+                         (ctypes.c_int*len(your_deck))(*your_deck),
+                         (ctypes.c_int*len(your_prize))(*your_prize),
+                         (ctypes.c_int*len(opponent_deck))(*opponent_deck),
+                         (ctypes.c_int*len(opponent_prize))(*opponent_prize),
+                         (ctypes.c_int*len(opponent_hand))(*opponent_hand),
+                         (ctypes.c_int*len(opponent_active))(*opponent_active),
+                         int(manual_coin))
+    result = json_to_dataclass(bs, ApiResult)
+    if result.error != 0:
+        if result.error == 1:
+            raise ValueError("Invalid Card ID.")
+        elif result.error == 2:
+            raise ValueError("Active card must be the ID of a Pokémon card.")
+        elif result.error == 30:
+            raise ValueError("agent_ptr broken.")
+        else:
+            raise RuntimeError()
 
-    return obs
+    return result.state
+
+def search_step(search_id: int, select: list[int]) -> SearchState:
+    """Proceed to the next selection.
+    
+    Args:
+        search_id: Search ID.
+        select: Chosen option index.
+
+    Returns:
+        SearchSate: State for the next selection.
+    """
+    bs = lib.SearchStep(agent_ptr, search_id, (ctypes.c_int*len(select))(*select), len(select))
+    result = json_to_dataclass(bs, ApiResult)
+    if result.error != 0:
+        if result.error == 1:
+            raise ValueError("There is no element with the specified search_id.")
+        elif result.error == 2:
+            raise ValueError("Released item.")
+        elif result.error == 3:
+            raise ValueError("Cannot be selected because the battle has ended.")
+        elif result.error == 4:
+            raise ValueError("Must be Observation.select.minCount <= len(select) <= Observation.select.maxCount.")
+        elif result.error == 5:
+            raise ValueError("Must be 0 <= select elements < len(Observation.select.option).")
+        elif result.error == 6:
+            raise ValueError("Duplicate select elements.")
+        elif result.error == 30:
+            raise ValueError("agent_ptr broken.")
+        else:
+            raise RuntimeError()
+    
+    return result.state
+
+def search_end() -> None:
+    """Terminate the search. Memory used during the search will be reused in the next search."""
+    lib.SearchEnd(agent_ptr)
+
+def search_release(search_id: int) -> None:
+    """Delete the state with the specified ID and make the memory available for reuse.
+    
+    Args:
+        search_id: Search ID.
+    """
+    lib.SearchRelease(agent_ptr, search_id)
+
+#endregion functions
+
