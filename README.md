@@ -196,19 +196,8 @@ Pokemon-TCG-Mega-Lucario-Z/
 
 ---
 
-## 🚀 Packaging & Verification
-
-To compile the standalone competition archive:
-
-```bash
-cd ptcg-agent
-
-# 1. Package root main.py, deck.csv, and cg/ SDK (<197.7 MB)
-./scripts/build_submission.sh
-
-# 2. Syntax & static validation
-python3 -m py_compile main.py cg/api.py cg/game.py cg/sim.py
-```
+## Kaggle Rank (Personal Best)
+  <img src="assets/rank-proof.png" alt="ranked 972 among 6000+ agents in the Pokemon TCG AI Battle Sim." width="100%"/>
 
 ### Kaggle Verification Contract
 When executed on the Kaggle runtime, the notebook performs a full self-game smoke test, producing the verified four-line confirmation:
